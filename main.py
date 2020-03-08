@@ -1,7 +1,95 @@
 import numpy as np
+import torch 
+import torch.nn.functional as F
+import torchvision
 import cv2
 import math
 
+
+
+class sudoNN(torch.nn.Module):
+        def __init__(self):
+            super(sudoNN, self).__init__()
+            self.conv1 = torch.nn.Conv2d(1, 32, 3, 1)
+            self.conv2 = torch.nn.Conv2d(32, 64, 3, 1)
+            self.dropout1 = torch.nn.Dropout2d(0.25)
+            self.dropout2 = torch.nn.Dropout2d(0.5)
+            self.fc1 = torch.nn.Linear(9216, 128)
+            self.fc2 = torch.nn.Linear(128, 10)
+
+        def forward(self,x):
+            x = self.conv1(x)
+            x = F.relu(x)
+            x = self.conv2(x)
+            x = F.relu(x)
+            x = F.max_pool2d(x, 2)
+            x = self.dropout1(x)
+            x = torch.flatten(x, 1)
+            x = self.fc1(x)
+            x = F.relu(x)
+            x = self.dropout2(x)
+            x = self.fc2(x)
+            output = F.log_softmax(x, dim=1)
+            return output
+    
+def textuali():
+    my_list=[]
+    transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
+    fonts = [ cv2.FONT_HERSHEY_SIMPLEX , cv2.FONT_HERSHEY_TRIPLEX ,cv2.FONT_ITALIC , cv2.FONT_HERSHEY_SCRIPT_COMPLEX]
+    for font in fonts:
+        for i in range(10):
+            img = np.zeros((100,100),dtype='uint8')
+            cv2.putText(img,  str(i),(20,70), font, 2,(255),5,cv2.LINE_AA)
+            img=cv2.resize(img,(28 ,28))
+            img_tensor = transform(torchvision.transforms.ToPILImage(mode='L')(img))
+            img_tensor_array = img_tensor.unsqueeze(0)
+            my_list.append([img_tensor_array,i])
+            cv2.imshow('hry',img)
+            print(img)
+            cv2.waitKey(0)
+    return my_list   
+
+def train_net():
+        my_batch_size = 32
+        num_epochs = 10
+        learn_rate = 0.0001
+        
+        train_db = torchvision.datasets.MNIST(root ="./MNIST",train=True ,transform=torchvision.transforms.ToTensor(),download=True)
+        test_db = torchvision.datasets.MNIST(root='./MNIST', train=False ,transform=torchvision.transforms.ToTensor(), download=True)
+        train_loader = torch.utils.data.DataLoader(dataset=train_db, batch_size=my_batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(dataset=test_db,  batch_size=my_batch_size, shuffle=False)
+        
+        
+        my_model = sudoNN()
+        optimizer = torch.optim.Adam(my_model.parameters(),lr=learn_rate)
+        total_step = len(train_loader)
+        loss=0
+                
+        my_list= textuali()
+        for epoch in range(num_epochs):
+            for i, (images,labels) in enumerate(my_list):
+                out = my_model(images)
+                loss = F.nll_loss(out, torch.tensor([labels]))
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+        for epoch in range(num_epochs):
+            for i, (images,labels) in enumerate(train_loader):
+                out = my_model(images)
+                loss = F.nll_loss(out,labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+        torch.save(my_model, './my_mnist_model.pt') 
+        print("loss is:")
+        print(loss*100)
+        return my_model
+
+
+        
+        
 def print_board(board):
         for i in range(len(board)):
             if (i%3 == 0 ):
@@ -9,7 +97,7 @@ def print_board(board):
             for j in range(len(board[0])):
                 if (j%3 ==0 and j!=0) :
                     print (" | " ,end="")
-                print(board[i][j] , end=" ")
+                print(int(board[i][j]) , end=" ")
             print("\n")
         return
     
@@ -97,29 +185,60 @@ def clean_img(img):
         M = cv2.getPerspectiveTransform(box,dst)
         img_5 =cv2.warpPerspective(img_4, M, (int(max_dist), int(max_dist)))
         return img_5
-        
-def get_digit_from_img(img,row,col,box_size):
-    cur_img = img[row*box_size :(row+1)*box_size, col*box_size : (col+1)*box_size]
-    cv2.imshow('final',cur_img)
-    cv2.waitKey(0)
 
-def img_to_board(img):
+def return_digit_from_net(res):
+    max = -100
+    max_i=0
+    for i in range(10):
+        if res[0][i] > max :
+            max_i=i
+            max=res[0][i]
+    return max_i
+
+def is_cont_frame(cont,box_size):
+        x,y,w,h = cv2.boundingRect(cont)
+        limit=box_size/2
+        return (x<limit/5 and y<limit/5) or (w>box_size*0.9) 
+
+def thin_num(img):
+        kernel = np.ones((2,2),np.uint8)
+        im_bw = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)[1]
+        erosion = cv2.erode(im_bw,kernel,iterations = 1)
+        return erosion
+    
+def get_digit_from_img(img,row,col,box_size,my_net):
+        cur_img = img[row*box_size :(row+1)*box_size, col*box_size : (col+1)*box_size]
+        contours ,hirer = cv2.findContours(cur_img,cv2.RETR_CCOMP,cv2.CHAIN_APPROX_SIMPLE)
+        max_cont= contours[0]
+        mask = np.zeros_like(cur_img)
+        cv2.fillPoly(mask,[max_cont],1)
+        cur_img=np.multiply(cur_img,mask)
+        if ( cv2.countNonZero(cur_img) ==0 or is_cont_frame(max_cont,box_size)):
+            return 0
+        cur_img=cv2.resize(cur_img,(28 ,28))
+        print(cur_img)
+        transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
+        img_tensor = transform(torchvision.transforms.ToPILImage(mode='L')(cur_img))
+        img_tensor_array = img_tensor.unsqueeze(0)
+        res=(my_net(img_tensor_array))
+        return  res.argmax(dim=1, keepdim=True) 
+
+def img_to_board(img,my_net):
     board = np.zeros([9 , 9])
     mini_box_size = int (math.sqrt(np.size(img))/ 9 )
     for i in range(9):
         for j in range(9):
-            board[i][j]=get_digit_from_img(img,i,j,mini_box_size)
+            board[i][j]=get_digit_from_img(img,i,j,mini_box_size,my_net)
     return board
             
         
 
-    
-def img_proccess(img):
-        im=clean_img(img.copy())
-        cv2.imshow('final',im)
-        cv2.waitKey(0)
-        img_to_board(im)
 
+    
+def img_proccess(img,my_net):
+        im=clean_img(img.copy())
+        new_board=img_to_board(im,my_net)
+        print_board(new_board)
         
 def main():
         board = [
@@ -133,9 +252,13 @@ def main():
         [1,2,0,0,0,7,4,0,0],
         [0,4,9,2,0,6,0,0,7]
         ]
-        
-        img = cv2.imread('images/sudo4.jpeg', 0)
-        img_proccess(img)
+        #my_net=train_net()
+        nodel = torch.load("./my_mnist_model.pt")
+        nodel.eval()
+        img = cv2.imread('images/sudo1.jpeg', 0)
+        img_proccess(img,nodel)
+
+
         
 
 
